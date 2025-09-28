@@ -2,6 +2,7 @@
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="google.protobuf.symbol_database")
 
+import os
 from eyetrax import GazeEstimator, run_9_point_calibration
 import cv2
 import pyautogui
@@ -511,7 +512,7 @@ def plot_session_analysis():
     plt.tight_layout()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"session_analysis_{timestamp}.png"
-    plt.savefig(filename, dpi=300, bbox_inches='tight')
+    plt.savefig(os.path.join("output", filename), dpi=300, bbox_inches='tight')
     print(f"📊 Session analysis saved as: {filename}")
     plt.show()
 
