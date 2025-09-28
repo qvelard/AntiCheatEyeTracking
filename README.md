@@ -1,5 +1,34 @@
 # Eye Tracking Anti-Cheat System - Mathematical Documentation
 
+## Getting Started
+
+### Installation
+
+1. **Backend (Python Server)**:
+   ```bash
+   cd EyeTracking
+   pip install -r ../requirements.txt
+   ```
+
+
+### Running the System
+
+1. **Start the Python Backend Server**:
+   ```bash
+   cd EyeTracking
+   # Launch the server
+   python main.py
+   ```
+   The server will run on `http://localhost:5000`
+
+    Without the control point method :
+   ```
+   Invoke-RestMethod -Uri "http://localhost:5000/start" -Method POST -ContentType "application/json" -Body '{"control_points_enabled": false}'
+   ```
+    With the control point method : 
+    ```
+    Invoke-RestMethod -Uri "http://localhost:5000/start" -Method POST -ContentType "application/json" -Body '{"control_points_enabled": true}'
+    ```
 ## Overview
 
 This document provides a comprehensive mathematical analysis of the eye tracking anti-cheat system implemented in `ca_clean.py`. The system uses objective behavioral metrics, statistical analysis, and control point validation to detect cheating attempts in real-time.
@@ -410,4 +439,4 @@ Individual risk scores are combined linearly, which may not capture complex inte
 
 ---
 
-*This document provides the mathematical foundation for understanding and extending the eye tracking anti-cheat system. For implementation details, refer to the source code in `ca_clean.py`.*
+*This document provides the mathematical foundation for understanding and extending the eye tracking anti-cheat system. For implementation details, refer to the source code in `main.py`.*

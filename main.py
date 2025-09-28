@@ -1,3 +1,4 @@
+
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="google.protobuf.symbol_database")
 
@@ -11,46 +12,41 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 from dataclasses import dataclass
 from typing import List, Dict, Tuple
+# Flask server
+from flask import Flask, jsonify, request, send_file
+from flask_cors import CORS
+import threading
 
-# Create estimator and calibrate
-print("🎯 Initializing Eye Tracking System...")
-estimator = GazeEstimator()
-print("📐 Starting 9-point calibration...")
-run_9_point_calibration(estimator)
-print("✅ Calibration complete!")
+app = Flask(__name__)
+CORS(app, origins=["*"], supports_credentials=True)  # Allow all origins; restrict in production
+from flask_socketio import SocketIO, emit
+import base64
+import io
+socketio = SocketIO(app, cors_allowed_origins="*")
+from flask_socketio import SocketIO, emit
+import base64
+import io
+latest_frame_path = 'latest_frame.png'
+tracking_thread = None
+tracking_active = False
+session_summary = {}
+socketio = SocketIO(app, cors_allowed_origins="*")
 
-# Ask user if they want Control Point Validation
-print("\n🎯 Control Point Validation (Advanced Anti-Cheat):")
-print("   - Periodically injects hidden control points")
-print("   - Verifies eye-tracking accuracy in real-time")
-print("   - Detects if someone is using fake gaze data")
-control_points_enabled = input("🔍 Enable control point validation? (y/n): ").lower().strip() == 'y'
 
-if control_points_enabled:
-    print("✅ Control point validation enabled - Advanced cheat detection!")
-else:
-    print("⚪ Control point validation disabled")
-
-# UI Configuration
-size = pyautogui.size()
-cap = cv2.VideoCapture(0)
-print(f"🖥️  Screen size detected: {size.width}x{size.height}")
-print("🎥 Starting video capture...")
-
-# Tracking variables
-positions = deque(maxlen=20)  # For suspicious behavior detection
-smoothed_positions = deque(maxlen=15)  # For moving average
+# Global variables for tracking
+estimator = None
+size = None
+cap = None
+positions = deque(maxlen=20)
+smoothed_positions = deque(maxlen=15)
 warning_count = 0
-start_time = time.time()
+start_time = None
 frame_count = 0
-
-# Smoothing parameters
 smoothing_window_size = 15
 smoothing_alpha = 0.3
-
-# Create UI window
-cv2.namedWindow('Eye Tracking Anti-Cheat', cv2.WINDOW_NORMAL)
-cv2.resizeWindow('Eye Tracking Anti-Cheat', 800, 600)
+control_points_enabled = False
+control_validator = None
+cheat_detector = None
 
 @dataclass
 class ControlPoint:
@@ -177,11 +173,28 @@ class ControlPointValidator:
         stats = self.get_accuracy_stats()
         return stats['accuracy'] < self.accuracy_threshold
 
-# Initialize Control Point Validator if enabled
-if control_points_enabled:
-    control_validator = ControlPointValidator(size.width, size.height)
-else:
-    control_validator = None
+
+def initialize_tracking():
+    global estimator, size, cap, control_validator, cheat_detector, positions, smoothed_positions, warning_count, start_time, frame_count
+    print("🎯 Initializing Eye Tracking System...")
+    estimator = GazeEstimator()
+    print("📐 Starting 9-point calibration...")
+    run_9_point_calibration(estimator)
+    print("✅ Calibration complete!")
+    size = pyautogui.size()
+    cap = cv2.VideoCapture(0)
+    print(f"🖥️  Screen size detected: {size.width}x{size.height}")
+    print("🎥 Starting video capture...")
+    positions = deque(maxlen=20)
+    smoothed_positions = deque(maxlen=15)
+    warning_count = 0
+    start_time = time.time()
+    frame_count = 0
+    cheat_detector = ObjectiveCheatDetector()
+    if control_points_enabled:
+        control_validator = ControlPointValidator(size.width, size.height)
+    else:
+        control_validator = None
 
 class ObjectiveCheatDetector:
     """Objective, measurable cheat detection with multiple behavioral indicators"""
@@ -635,111 +648,122 @@ def draw_ui_overlay(frame, current_pos, smoothed_pos, is_warning, fps, cheat_pro
     
     return overlay
 
-print("🚀 Starting real-time tracking... Press 'Q' to quit, 'P' for analysis")
 
-while True:
-    frame_count += 1
-    
-    ret, frame = cap.read()
-    if not ret:
-        print("❌ Failed to capture frame")
-        break
-    
-    # Calculate FPS
-    if frame_count % 30 == 0:
-        current_time = time.time()
-        fps = 30 / (current_time - start_time + 1e-6) if frame_count > 30 else 0
-    else:
-        fps = 0
-    
-    features, blink = estimator.extract_features(frame)
-    current_pos = None
-    is_warning = False
-    cheat_probability = 0.0
-    risk_factors = {}
+def tracking_loop():
+    global tracking_active, session_summary
+    global smoothed_positions, positions, frame_count, warning_count, smoothing_window_size, start_time, control_validator, cheat_detector
+    print("🚀 Starting real-time tracking (server mode)...")
+    initialize_tracking()
+    cv2.namedWindow('Eye Tracking Anti-Cheat', cv2.WINDOW_NORMAL)
+    cv2.resizeWindow('Eye Tracking Anti-Cheat', 800, 600)
+    while tracking_active:
+        try:
+            frame_count += 1
+            while tracking_active:
+                try:
+                    frame_count += 1
+                    ret, frame = cap.read()
+                    if not ret:
+                        print("❌ Failed to capture frame")
+                        tracking_active = False
+                        continue
+                    fps = 0
+                    if frame_count % 30 == 0:
+                        current_time = time.time()
+                        fps = 30 / (current_time - start_time + 1e-6) if frame_count > 30 else 0
+                    features, blink = estimator.extract_features(frame)
+                    current_pos = None
+                    is_warning = False
+                    cheat_probability = 0.0
+                    risk_factors = {}
+                    smoothed_pos = None
+                    if features is not None and not blink:
+                        x, y = estimator.predict([features])[0]
+                        current_pos = (x, y)
+                        positions.append((x, y))
+                        smoothed_positions.append((x, y))
+                        if len(smoothed_positions) > smoothing_window_size:
+                            new_positions = deque(list(smoothed_positions)[-smoothing_window_size:], maxlen=smoothing_window_size)
+                            smoothed_positions = new_positions
+                        smoothed_pos = calculate_moving_average(smoothed_positions)
+                        is_warning, cheat_probability, risk_factors = check_sus()
+                        if control_validator is not None:
+                            if control_validator.should_inject_control_point():
+                                control_pos = control_validator.start_control_test()
+                                print(f"🎯 Control Point Test Started at ({control_pos[0]}, {control_pos[1]})")
+                            if control_validator.check_control_point(current_pos):
+                                if control_validator.is_session_compromised():
+                                    print("🚨 SESSION COMPROMISED - Control point validation failed!")
+                                    is_warning = True
+                                    cheat_probability = max(cheat_probability, 85.0)
+                    elif blink:
+                        cv2.putText(frame, "BLINK DETECTED", (50, 220), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 255), 2)
+                    display_frame = draw_ui_overlay(frame, current_pos, smoothed_pos, is_warning, fps, cheat_probability, risk_factors)
+                    # Encode frame as JPEG and emit via WebSocket
+                    _, buffer = cv2.imencode('.jpg', display_frame)
+                    jpg_as_text = base64.b64encode(buffer).decode('utf-8')
+                    socketio.emit('frame', {'image': jpg_as_text})
+                    cv2.imwrite(latest_frame_path, display_frame)
+                    cv2.imshow('Eye Tracking Anti-Cheat', display_frame)
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == ord('q') or key == ord('Q'):
+                        tracking_active = False
+                    elif key == ord('p') or key == ord('P'):
+                        print("📊 Generating session analysis...")
+                        plot_session_analysis()
+                    elif key == ord('+') or key == ord('='):
+                        smoothing_window_size = min(smoothing_window_size + 1, 25)
+                        print(f"Smoothing window increased to {smoothing_window_size}")
+                    elif key == ord('-'):
+                        smoothing_window_size = max(smoothing_window_size - 1, 3)
+                        print(f"Smoothing window decreased to {smoothing_window_size}")
+                except Exception as e:
+                    print(f"Error in tracking loop: {e}")
+                    tracking_active = False
+            # Add control point stats if available
+            if control_validator is not None and hasattr(control_validator, 'get_stats'):
+                stats = control_validator.get_stats() if callable(getattr(control_validator, 'get_stats', None)) else None
+                if stats:
+                    session_summary['control_accuracy'] = stats.get('accuracy', None)
+                    session_summary['control_tests'] = stats.get('total_tests', None)
+            # Add recommendation based on avg_prob
+            avg_prob = session_summary.get('average_threat', None)
+            if avg_prob is not None:
+                if avg_prob < 30:
+                    session_summary['recommendation'] = "Session appears legitimate"
+                elif avg_prob < 60:
+                    session_summary['recommendation'] = "Some suspicious activity detected"
+                else:
+                    session_summary['recommendation'] = "High probability of cheating detected"
+            else:
+                session_summary['recommendation'] = "High probability of cheating detected"
+        except Exception as e:
+            print(f"Critical error in tracking loop: {e}")
+            tracking_active = False
+    print("👋 Eye tracking session ended")
 
-    # Predict screen coordinates
-    smoothed_pos = None
-    if features is not None and not blink:
-        x, y = estimator.predict([features])[0]
-        current_pos = (x, y)
-        
-        positions.append((x, y))
-        smoothed_positions.append((x, y))
-        
-        # Adjust smoothed_positions window size
-        if len(smoothed_positions) > smoothing_window_size:
-            new_positions = deque(list(smoothed_positions)[-smoothing_window_size:], maxlen=smoothing_window_size)
-            smoothed_positions = new_positions
-        
-        smoothed_pos = calculate_moving_average(smoothed_positions)
-        is_warning, cheat_probability, risk_factors = check_sus()
-        
-        # Control Point Validation
-        if control_validator is not None:
-            if control_validator.should_inject_control_point():
-                control_pos = control_validator.start_control_test()
-                print(f"🎯 Control Point Test Started at ({control_pos[0]}, {control_pos[1]})")
-            
-            if control_validator.check_control_point(current_pos):
-                if control_validator.is_session_compromised():
-                    print("🚨 SESSION COMPROMISED - Control point validation failed!")
-                    is_warning = True
-                    cheat_probability = max(cheat_probability, 85.0)
-                    
-    elif blink:
-        cv2.putText(frame, "BLINK DETECTED", (50, 220), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 255), 2)
-    
-    # Draw modern UI
-    display_frame = draw_ui_overlay(frame, current_pos, smoothed_pos, is_warning, fps, 
-                                  cheat_probability, risk_factors)
-    
-    cv2.imshow('Eye Tracking Anti-Cheat', display_frame)
-    
-    # Handle keyboard input
-    key = cv2.waitKey(1) & 0xFF
-    if key == ord('q') or key == ord('Q'):
-        break
-    elif key == ord('p') or key == ord('P'):
-        print("📊 Generating session analysis...")
-        plot_session_analysis()
-    elif key == ord('+') or key == ord('='):
-        smoothing_window_size = min(smoothing_window_size + 1, 25)
-        print(f"Smoothing window increased to {smoothing_window_size}")
-    elif key == ord('-'):
-        smoothing_window_size = max(smoothing_window_size - 1, 3)
-        print(f"Smoothing window decreased to {smoothing_window_size}")
+# Flask endpoints
+@app.route('/start', methods=['POST'])
+def start_tracking():
+    global tracking_thread, tracking_active, control_points_enabled
+    if tracking_active:
+        return jsonify({'status': 'already running'}), 400
+    control_points_enabled = request.json.get('control_points_enabled', False)
+    tracking_active = True
+    tracking_thread = threading.Thread(target=tracking_loop)
+    tracking_thread.start()
+    return jsonify({'status': 'started'}), 200
 
-# Cleanup
-cap.release()
-cv2.destroyAllWindows()
+@app.route('/stop', methods=['POST'])
+def stop_tracking():
+    global tracking_active
+    tracking_active = False
+    return jsonify({'status': 'stopping'}), 200
 
-# Final session analysis
-if len(cheat_detector.cheat_probability_history) > 0:
-    print("\n" + "="*50)
-    print("SESSION COMPLETED")
-    print("="*50)
-    avg_prob = np.mean(cheat_detector.cheat_probability_history)
-    max_prob = np.max(cheat_detector.cheat_probability_history)
-    
-    print(f"Average threat level: {avg_prob:.1f}%")
-    print(f"Maximum threat level: {max_prob:.1f}%")
-    print(f"Total warnings: {warning_count}")
-    
-    if control_validator:
-        stats = control_validator.get_accuracy_stats()
-        print(f"Control point accuracy: {stats['accuracy']:.1%} ({stats['total_tests']} tests)")
-    
-    if avg_prob < 30:
-        print("✅ Session appears legitimate")
-    elif avg_prob < 60:
-        print("⚠️ Some suspicious activity detected")
-    else:
-        print("❌ High probability of cheating detected")
-    
-    auto_plot = input("\nGenerate final analysis plot? (y/n): ").lower().strip() == 'y'
-    if auto_plot:
-        plot_session_analysis()
+@app.route('/status', methods=['GET'])
+def get_status():
+    global tracking_active, session_summary
+    return jsonify({'tracking_active': tracking_active, 'session_summary': session_summary}), 200
 
-print("👋 Eye tracking session ended")
+if __name__ == '__main__':
+    socketio.run(app, host='0.0.0.0', port=5000)

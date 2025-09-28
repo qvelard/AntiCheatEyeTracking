@@ -1,0 +1,15 @@
+sentence-transformers
+faiss-cpu
+numpy
+pyppeteer
+transformers
+torch
+torchvision
+pymupdf
+opencv-python
+scipy
+mediapipe
+datasets
+accelerate
+tokenizers
+safetensors
