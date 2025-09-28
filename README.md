@@ -7,7 +7,7 @@
 1. **Backend (Python Server)**:
    ```bash
    cd EyeTracking
-   pip install -r ../requirements.txt
+   pip install -r requirements.txt
    ```
 
 
